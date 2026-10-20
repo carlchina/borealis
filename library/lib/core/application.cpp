@@ -33,6 +33,29 @@ double maxMouse = 0;
 double maxController = 0;
 double maxDispatch = 0;
 } // namespace ps5input
+
+// The console's memory pools: the kernel starts refusing allocations once
+// they are used up, which shows up as broken pictures and a crash.
+extern "C" int64_t sceKernelGetDirectMemorySize(void);
+extern "C" int sceKernelAvailableDirectMemorySize(size_t* available);
+extern "C" int sceKernelAvailableFlexibleMemorySize(size_t* available);
+extern "C" int sceKernelConfiguredFlexibleMemorySize(size_t* configured);
+
+inline size_t ps5FreeMemory(bool direct)
+{
+    size_t available = 0;
+    int rc = direct ? sceKernelAvailableDirectMemorySize(&available)
+                    : sceKernelAvailableFlexibleMemorySize(&available);
+    return rc == 0 ? available : 0;
+}
+
+inline size_t ps5TotalMemory(bool direct)
+{
+    size_t configured = 0;
+    if (direct) return (size_t)(sceKernelGetDirectMemorySize() >> 20);
+    if (sceKernelConfiguredFlexibleMemorySize(&configured) != 0) return 0;
+    return configured >> 20;
+}
 #endif
 
 #include <algorithm>
@@ -290,9 +313,12 @@ bool Application::internalMainLoop()
         if (now - ps5ReportAt > 1000000.0)
         {
             Logger::info("[perf] frames={} last={:.1f}ms max={:.1f}ms | pump={:.1f} input={:.1f} render={:.1f} "
-                         "| touch={:.1f} mouse={:.1f} ctrl={:.1f} dispatch={:.1f}",
+                         "| touch={:.1f} mouse={:.1f} ctrl={:.1f} dispatch={:.1f} "
+                         "| mem cpu={}/{}MB gpu={}/{}MB",
                 ps5FrameCount, frameMs, ps5MaxFrame, ps5MaxPump, ps5MaxInput, ps5MaxRender,
-                ps5input::maxTouch, ps5input::maxMouse, ps5input::maxController, ps5input::maxDispatch);
+                ps5input::maxTouch, ps5input::maxMouse, ps5input::maxController, ps5input::maxDispatch,
+                ps5FreeMemory(false) >> 20, ps5TotalMemory(false),
+                ps5FreeMemory(true) >> 20, ps5TotalMemory(true));
             ps5FrameCount = 0;
             ps5MaxFrame = ps5MaxPump = ps5MaxInput = ps5MaxRender = 0;
             ps5input::maxTouch = ps5input::maxMouse = ps5input::maxController = ps5input::maxDispatch = 0;
