@@ -2469,7 +2469,12 @@ static int nvg__allocTextAtlas(NVGcontext* ctx)
 		ctx->fontImages[ctx->fontImageIdx+1] = ctx->params.renderCreateTexture(ctx->params.userPtr, NVG_TEXTURE_ALPHA, iw, ih, 0, NULL);
 	}
 	++ctx->fontImageIdx;
-	fonsResetAtlas(ctx->fs, iw, ih);
+	// The atlas could not be made: without it the glyphs have nowhere to go,
+	// and the text would be rasterized into nothing.
+	if (fonsResetAtlas(ctx->fs, iw, ih) == 0) {
+		--ctx->fontImageIdx;
+		return 0;
+	}
 	return 1;
 }
 
