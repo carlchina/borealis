@@ -42,6 +42,8 @@ extern "C" int sceKernelAvailableFlexibleMemorySize(size_t* available);
 extern "C" int sceKernelConfiguredFlexibleMemorySize(size_t* configured);
 // The heap the graphics driver and the application allocate from.
 extern "C" size_t ps5_opengl_heap_live_bytes(void);
+extern "C" size_t ps5_opengl_heap_peak_bytes(void);
+extern "C" size_t ps5_opengl_heap_failures(void);
 
 inline size_t ps5FreeMemory(bool direct)
 {
@@ -316,12 +318,13 @@ bool Application::internalMainLoop()
         {
             Logger::info("[perf] frames={} last={:.1f}ms max={:.1f}ms | pump={:.1f} input={:.1f} render={:.1f} "
                          "| touch={:.1f} mouse={:.1f} ctrl={:.1f} dispatch={:.1f} "
-                         "| mem cpu={}/{}MB gpu={}/{}MB heap={}MB",
+                         "| mem cpu={}/{}MB gpu={}/{}MB heap={}/{}/{} (live/peak/fail)",
                 ps5FrameCount, frameMs, ps5MaxFrame, ps5MaxPump, ps5MaxInput, ps5MaxRender,
                 ps5input::maxTouch, ps5input::maxMouse, ps5input::maxController, ps5input::maxDispatch,
                 ps5FreeMemory(false) >> 20, ps5TotalMemory(false),
                 ps5FreeMemory(true) >> 20, ps5TotalMemory(true),
-                ps5_opengl_heap_live_bytes() >> 20);
+                ps5_opengl_heap_live_bytes() >> 20, ps5_opengl_heap_peak_bytes() >> 20,
+                ps5_opengl_heap_failures());
             ps5FrameCount = 0;
             ps5MaxFrame = ps5MaxPump = ps5MaxInput = ps5MaxRender = 0;
             ps5input::maxTouch = ps5input::maxMouse = ps5input::maxController = ps5input::maxDispatch = 0;
