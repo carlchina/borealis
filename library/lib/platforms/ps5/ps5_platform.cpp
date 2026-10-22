@@ -19,6 +19,7 @@ limitations under the License.
 #include <borealis/core/application.hpp>
 #include <borealis/core/logger.hpp>
 #include <borealis/core/thread.hpp>
+#include <borealis/platforms/ps5/ps5_ime.hpp>
 #include <borealis/platforms/ps5/ps5_platform.hpp>
 
 extern "C" int sceSystemServiceLoadExec(const char* path, const char* args[]);
@@ -49,7 +50,7 @@ void Ps5Platform::createWindow(std::string windowTitle, uint32_t windowWidth, ui
 
     this->videoContext = new SDLVideoContext(windowTitle, windowWidth, windowHeight, NAN, NAN);
     this->inputManager = new SDLInputManager(this->videoContext->getSDLWindow());
-    this->imeManager   = new SDLImeManager(&this->otherEvent);
+    this->imeManager   = new Ps5ImeManager(&this->otherEvent);
 }
 
 bool Ps5Platform::canShowWirelessLevel()
