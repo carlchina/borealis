@@ -16,37 +16,22 @@ limitations under the License.
 
 #include <borealis/platforms/ps5/ps5_ime.hpp>
 
-#include <dlfcn.h>
-
 #include <algorithm>
 #include <cstdint>
-#include <cstring>
 #include <memory>
 #include <string>
 
 #include <borealis/core/logger.hpp>
 #include <borealis/core/thread.hpp>
 
-namespace brls
+namespace ps5ime
 {
-
-namespace
-{
-
-// The keyboard is a system library that the console only loads when a title
-// asks for it, so it is opened the first time a text field is used and the
-// functions are called through the addresses the console hands out.
-constexpr const char* kImeDialogLibrary = "libSceImeDialog.sprx";
-// A console that names its system libraries the older way still has the same
-// dialog, so the second name is tried when the first one is not there.
-constexpr const char* kImeDialogLibraryAlt = "libSceImeDialog.prx";
-constexpr const char* kUserServiceLibrary  = "libSceUserService.sprx";
 
 // The dialog's description of what it should ask for. The layout is the one
-// the console's system libraries take: the same struct is used by the PS4
-// build of this library, and the console runs PS4 titles through the same
-// dialog. The trailing room is zeroed and only there so that a console that
-// knows more fields reads zeros rather than whatever follows this struct.
+// the console's system libraries take: the same struct serves the PS4 build of
+// this library, and the console runs PS4 titles through the same dialog. The
+// trailing room is zeroed and only there so that a console that knows more
+// fields reads zeros rather than whatever follows this struct.
 struct ImeDialogSetting
 {
     uint32_t userId;
@@ -73,6 +58,26 @@ struct ImeDialogResult
     int8_t reserved[12];
 };
 
+} // namespace ps5ime
+
+// The keyboard is a system library, imported like the pad and the audio
+// output: the console loads it when the title starts and writes its addresses
+// into this image.
+extern "C"
+{
+    int sceImeDialogInit(const ps5ime::ImeDialogSetting* setting, void* reserved);
+    int sceImeDialogGetStatus(void);
+    int sceImeDialogGetResult(ps5ime::ImeDialogResult* result);
+    int sceImeDialogTerm(void);
+    int sceUserServiceGetInitialUser(int32_t* userId);
+}
+
+namespace brls
+{
+
+namespace
+{
+
 // The keyboard layouts the console offers.
 constexpr int kTypeDefault = 0;
 constexpr int kTypeNumber  = 4;
@@ -88,75 +93,25 @@ constexpr int kEndStatusOk = 0;
 
 // The system writes UTF-16; the console's wchar_t is two bytes wide, so the
 // two are the same thing here.
-constexpr size_t kMaxTextLength = 512;
+constexpr size_t kMaxTextLength  = 512;
 constexpr size_t kMaxTitleLength = 128;
 
 uint16_t inputText[kMaxTextLength + 1];
 uint16_t titleText[kMaxTitleLength];
 uint16_t placeholderText[kMaxTitleLength];
 
-struct ImeDialogLibrary
-{
-    using InitFn      = int (*)(const ImeDialogSetting*, void*);
-    using GetStatusFn = int (*)();
-    using GetResultFn = int (*)(ImeDialogResult*);
-    using TermFn      = int (*)();
-
-    void* module      = nullptr;
-    InitFn init       = nullptr;
-    GetStatusFn status = nullptr;
-    GetResultFn result = nullptr;
-    TermFn term       = nullptr;
-    bool opened       = false;
-
-    bool open()
-    {
-        if (opened)
-            return init != nullptr;
-
-        opened = true;
-        module = dlopen(kImeDialogLibrary, RTLD_LAZY);
-        if (module == nullptr)
-            module = dlopen(kImeDialogLibraryAlt, RTLD_LAZY);
-        if (module == nullptr) {
-            const char* reason = dlerror();
-            Logger::error("the console's keyboard is not available: {}", reason ? reason : kImeDialogLibrary);
-            return false;
-        }
-
-        init   = reinterpret_cast<InitFn>(dlsym(module, "sceImeDialogInit"));
-        status = reinterpret_cast<GetStatusFn>(dlsym(module, "sceImeDialogGetStatus"));
-        result = reinterpret_cast<GetResultFn>(dlsym(module, "sceImeDialogGetResult"));
-        term   = reinterpret_cast<TermFn>(dlsym(module, "sceImeDialogTerm"));
-        if (init == nullptr || status == nullptr || result == nullptr || term == nullptr) {
-            Logger::error("the console's keyboard is missing its entry points");
-            init = nullptr;
-            return false;
-        }
-
-        Logger::info("the console's keyboard is available");
-        return true;
-    }
-};
-
-ImeDialogLibrary keyboard;
-
-// The user the keyboard is opened for. Reading it is best effort: without it
-// the dialog cannot know which account's languages to show, and the console
-// then answers with an error rather than opening.
+// The user the keyboard is opened for: it decides which languages and which
+// layouts the dialog offers. Reading it is best effort.
 uint32_t currentUser()
 {
     static int32_t user = -1;
-    if (user >= 0)
-        return (uint32_t)user;
-
-    user = 0;
-    void* service = dlopen(kUserServiceLibrary, RTLD_LAZY);
-    if (service != nullptr) {
-        using GetUserFn = int (*)(int32_t*);
-        auto getUser   = reinterpret_cast<GetUserFn>(dlsym(service, "sceUserServiceGetInitialUser"));
-        if (getUser != nullptr && getUser(&user) != 0)
+    if (user < 0) {
+        user = 0;
+        const int rc = sceUserServiceGetInitialUser(&user);
+        if (rc != 0) {
+            Logger::warning("the console's keyboard has no user: 0x{:08x}", (uint32_t)rc);
             user = 0;
+        }
     }
     return (uint32_t)user;
 }
@@ -248,9 +203,9 @@ std::string utf16ToUtf8(const uint16_t* source)
 /**
  * Follow the dialog from the main loop. The console draws the keyboard itself,
  * so there is nothing to render here: the loop only asks whether it is still
- * open. Polling from the main loop instead of waiting inside the call keeps the
- * application's own frames going while the player types, and keeps the text
- * field's callback on the thread that owns the interface.
+ * open. Polling instead of waiting inside the call keeps the application's own
+ * frames going while the player types, and keeps the field's callback on the
+ * thread that owns the interface.
  */
 void waitForInput(std::function<void(std::string)> callback)
 {
@@ -262,7 +217,7 @@ void waitForInput(std::function<void(std::string)> callback)
     auto poll = std::make_shared<Poll>();
 
     brls::sync([callback, poll]() {
-        const int status = keyboard.status();
+        const int status = sceImeDialogGetStatus();
 
         if (status == kStatusRunning) {
             poll->shown = true;
@@ -278,13 +233,13 @@ void waitForInput(std::function<void(std::string)> callback)
                 return;
             }
             Logger::error("the console's keyboard never opened");
-            keyboard.term();
+            sceImeDialogTerm();
             return;
         }
 
-        ImeDialogResult result {};
-        const int rc = keyboard.result(&result);
-        keyboard.term();
+        ps5ime::ImeDialogResult result {};
+        const int rc = sceImeDialogGetResult(&result);
+        sceImeDialogTerm();
 
         Logger::info("keyboard closed: rc=0x{:08x} end={}", (uint32_t)rc, (int)result.endstatus);
         if (rc == 0 && result.endstatus == kEndStatusOk)
@@ -298,8 +253,13 @@ bool Ps5ImeManager::openSystemDialog(std::function<void(std::string)> callback, 
     const std::string& headerText, const std::string& subText, int maxStringLength,
     const std::string& initialText)
 {
-    if (!keyboard.open())
-        return false;
+    // Nothing should be on screen: a dialog left behind by an earlier field
+    // would make the console refuse this one.
+    const int status = sceImeDialogGetStatus();
+    if (status == kStatusRunning || status == kStatusStopped) {
+        Logger::warning("the console's keyboard is still open: status={}", status);
+        sceImeDialogTerm();
+    }
 
     const size_t limit = (size_t)std::clamp(maxStringLength, 1, (int)kMaxTextLength);
 
@@ -307,7 +267,7 @@ bool Ps5ImeManager::openSystemDialog(std::function<void(std::string)> callback, 
     utf8ToUtf16(headerText, titleText, kMaxTitleLength);
     utf8ToUtf16(subText, placeholderText, kMaxTitleLength);
 
-    ImeDialogSetting setting {};
+    ps5ime::ImeDialogSetting setting {};
     setting.userId              = currentUser();
     setting.type                = type;
     setting.maxTextLength       = (uint32_t)limit;
@@ -319,13 +279,14 @@ bool Ps5ImeManager::openSystemDialog(std::function<void(std::string)> callback, 
     setting.placeholder         = reinterpret_cast<const wchar_t*>(placeholderText);
     setting.title               = reinterpret_cast<const wchar_t*>(titleText);
 
-    const int rc = keyboard.init(&setting, nullptr);
+    const int rc = sceImeDialogInit(&setting, nullptr);
     if (rc != 0) {
-        Logger::error("the console's keyboard did not open: 0x{:08x}", (uint32_t)rc);
-        keyboard.term();
+        Logger::error("the console's keyboard did not open: 0x{:08x} (user={} status={})",
+            (uint32_t)rc, setting.userId, status);
         return false;
     }
 
+    Logger::info("the console's keyboard is open: user={}", setting.userId);
     waitForInput(std::move(callback));
     return true;
 }
