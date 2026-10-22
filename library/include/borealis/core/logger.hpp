@@ -34,6 +34,7 @@
 #include <fmt/chrono.h>
 
 #include <borealis/core/event.hpp>
+#include <cstdio>
 #include <mutex>
 #include <string>
 
@@ -85,11 +86,36 @@ class Logger
      */
     static void setThreadSafeLogging(bool threadSafeLogging);
 
+    /**
+     * Bounds the size of the file the log is written to.
+     *
+     * When the output is a regular file and it grows past this many bytes, only
+     * warnings and errors are written from then on, so a title that runs for
+     * hours on a console - where debug logging is on and nothing ever rotates
+     * the file - cannot fill the storage. 0 keeps the log unbounded.
+     */
+    static void setLogFileLimit(std::size_t limit) { Logger::logFileLimit = limit; }
+
     template <typename... Args>
     inline static void log(LogLevel level, std::string prefix, std::string color, fmt::format_string<Args...> format, Args&&... args)
     {
         if (Logger::logLevel < level)
             return;
+
+        if (Logger::logFileLimit != 0 && level < LogLevel::LOG_WARNING) {
+            if (Logger::logFull)
+                return;
+            // Measuring the file costs a call, so it is only done every now and
+            // then rather than for every line.
+            if ((++Logger::logWrites & 0xFF) == 0) {
+                long size = Logger::logOut == nullptr ? -1 : std::ftell(Logger::logOut);
+                if (size > 0 && (std::size_t)size >= Logger::logFileLimit) {
+                    Logger::logFull = true;
+                    Logger::log(LogLevel::LOG_WARNING, "WARNING", BRLS_WARNING_COLOR,
+                        "log file reached {} bytes, only warnings and errors follow", (std::size_t)size);
+                }
+            }
+        }
 
         TimePoint now = std::chrono::system_clock::now();
         uint64_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -176,6 +202,9 @@ class Logger
     inline static Event<TimePoint, LogLevel, std::string> logEvent;
     inline static std::FILE *logOut = stdout;
     inline static LogLevel logLevel = LogLevel::LOG_INFO;
+    inline static std::size_t logFileLimit = 0;
+    inline static std::size_t logWrites = 0;
+    inline static bool logFull = false;
 };
 
 } // namespace brls
