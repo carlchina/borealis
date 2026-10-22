@@ -70,7 +70,31 @@ extern "C"
     int sceImeDialogGetResult(ps5ime::ImeDialogResult* result);
     int sceImeDialogTerm(void);
     int sceUserServiceGetInitialUser(int32_t* userId);
+    int sceSysmoduleLoadModule(uint16_t id);
 }
+
+// The console's keyboard dialog is its own system module, and unlike the pad it
+// is not one a title starts with: the app asks for it the first time a field is
+// used. Loading it is what makes the console write the addresses above into
+// this image, so the imports are read back from the slots the build recorded
+// before they are called - an import the loader did not fill holds zero, and a
+// call through it would jump to zero.
+// The linked image's text segment, which is where the import slots are counted
+// from. Only the title has one; the platform's own binary leaves it undefined.
+extern const char __wiliwili_text_start[] __attribute__((weak));
+
+namespace ps5ime
+{
+// The title build replaces these with the slots it read from the linked image
+// (see scripts/ps5/title/build_title.sh). What is here only satisfies the
+// platform's own link and answers "unknown" to the checks below.
+__attribute__((weak)) extern const uint64_t kImportSlots[5] = { 0, 0, 0, 0, 0 };
+__attribute__((weak)) extern const char* const kImportNames[5] = {
+    "sceImeDialogInit", "sceImeDialogGetStatus", "sceImeDialogGetResult",
+    "sceImeDialogTerm", "sceUserServiceGetInitialUser"
+};
+__attribute__((weak)) extern const uint64_t kTextOffset = UINT64_MAX;
+} // namespace ps5ime
 
 namespace brls
 {
@@ -91,6 +115,10 @@ constexpr int kStatusStopped = 2;
 
 constexpr int kEndStatusOk = 0;
 
+// The console's module for the keyboard dialog, the same one its own settings
+// screens use.
+constexpr uint16_t kKeyboardModule = 0x0096;
+
 // The system writes UTF-16; the console's wchar_t is two bytes wide, so the
 // two are the same thing here.
 constexpr size_t kMaxTextLength  = 512;
@@ -100,6 +128,43 @@ uint16_t inputText[kMaxTextLength + 1];
 uint16_t titleText[kMaxTitleLength];
 uint16_t placeholderText[kMaxTitleLength];
 
+// An import that the console did not bind holds zero.
+bool importResolved(int index)
+{
+    if (__wiliwili_text_start == nullptr || ps5ime::kImportSlots[index] == 0 ||
+        ps5ime::kTextOffset == UINT64_MAX)
+        return false;
+    const uintptr_t base =
+        reinterpret_cast<uintptr_t>(__wiliwili_text_start) - (uintptr_t)ps5ime::kTextOffset;
+    return *(volatile uint64_t*)(base + ps5ime::kImportSlots[index]) != 0;
+}
+
+/**
+ * Make sure the console's dialog can be called at all. Asking for the module is
+ * what makes the console bind the imports above; a console that answers that
+ * the module is already there has done the same, so it is the slots, not the
+ * answer, that decide.
+ */
+bool keyboardReady()
+{
+    static int state = -1;
+    if (state >= 0)
+        return state == 1;
+
+    const int rc = sceSysmoduleLoadModule(kKeyboardModule);
+    Logger::info("the console's keyboard module: rc=0x{:08x}", (uint32_t)rc);
+
+    bool ready = true;
+    for (int i = 0; i < 4; i++) {
+        if (!importResolved(i)) {
+            Logger::error("the console's keyboard is unresolved: {}", ps5ime::kImportNames[i]);
+            ready = false;
+        }
+    }
+    state = ready ? 1 : 0;
+    return ready;
+}
+
 // The user the keyboard is opened for: it decides which languages and which
 // layouts the dialog offers. Reading it is best effort.
 uint32_t currentUser()
@@ -107,11 +172,8 @@ uint32_t currentUser()
     static int32_t user = -1;
     if (user < 0) {
         user = 0;
-        const int rc = sceUserServiceGetInitialUser(&user);
-        if (rc != 0) {
-            Logger::warning("the console's keyboard has no user: 0x{:08x}", (uint32_t)rc);
+        if (importResolved(4) && sceUserServiceGetInitialUser(&user) != 0)
             user = 0;
-        }
     }
     return (uint32_t)user;
 }
@@ -253,6 +315,9 @@ bool Ps5ImeManager::openSystemDialog(std::function<void(std::string)> callback, 
     const std::string& headerText, const std::string& subText, int maxStringLength,
     const std::string& initialText)
 {
+    if (!keyboardReady())
+        return false;
+
     // Nothing should be on screen: a dialog left behind by an earlier field
     // would make the console refuse this one.
     const int status = sceImeDialogGetStatus();
