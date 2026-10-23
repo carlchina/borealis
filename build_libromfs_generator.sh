@@ -18,7 +18,8 @@ set -e
 
 echo "Build libromfs-generator"
 
-PROJECT_PATH=$(dirname "$0")
+# absolute, so the paths below do not depend on where the script is called from
+PROJECT_PATH=$(cd -- "$(dirname -- "$0")" && pwd)
 LIBROMFS_PATH="${PROJECT_PATH}/library/lib/extern/libromfs/generator"
 BUILD_DIR="${PROJECT_PATH}/build_libromfs_generator"
 # Ninja when it is around, the default generator otherwise
