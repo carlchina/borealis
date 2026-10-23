@@ -4,6 +4,11 @@ function(check_libromfs_generator)
     if (NOT DEFINED LIBROMFS_PREBUILT_GENERATOR OR NOT EXISTS "${LIBROMFS_PREBUILT_GENERATOR}")
         if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libromfs-generator")
             set(LIBROMFS_PREBUILT_GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/libromfs-generator" PARENT_SCOPE)
+        elseif (DEFINED BOREALIS_LIBRARY AND EXISTS "${BOREALIS_LIBRARY}/../libromfs-generator")
+            # A project that only includes this file keeps it at its root, so
+            # the helper sits beside the checkout rather than beside the source
+            # directory of the caller.
+            set(LIBROMFS_PREBUILT_GENERATOR "${BOREALIS_LIBRARY}/../libromfs-generator" PARENT_SCOPE)
         else ()
             message(FATAL_ERROR "libromfs-generator has not been built, please refer to borealis/build_libromfs_generator.sh for more information")
         endif ()
