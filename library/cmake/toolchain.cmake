@@ -86,6 +86,12 @@ elseif(PLATFORM_PS5)
     endif ()
     set(CMAKE_TOOLCHAIN_FILE "$ENV{PS5_PAYLOAD_SDK}/toolchain/prospero.cmake" CACHE PATH "toolchain file")
     add_definitions(-DPS5 -D__PS5__)
+    if (USE_LIBROMFS)
+        # The resources are turned into C++ by a helper that runs on the
+        # machine doing the build, and this one cross compiles: the helper has
+        # to exist for the host, see build_libromfs_generator.sh.
+        check_libromfs_generator()
+    endif ()
 elseif (PLATFORM_SWITCH)
     message(STATUS "building for SWITCH")
     if (NOT DEFINED ENV{DEVKITPRO})
