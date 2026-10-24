@@ -283,8 +283,8 @@ SDLVideoContext::SDLVideoContext(std::string windowTitle, uint32_t windowWidth, 
     // On PS5 with Vulkan, presentation is direct to VideoOut via VK_KHR_display.
     // SDL is used exclusively for gamepad controller input and audio.
     // The PS5 G19 SDL2 video driver has no Vulkan support and rejects SDL_CreateWindow.
-    static SDL_Window dummyWindow{};
-    this->window = &dummyWindow;
+    static uint64_t dummyStorage[64] = {0};
+    this->window = (SDL_Window*)dummyStorage;
     windowWidth = 1920;
     windowHeight = 1080;
     Logger::info("sdl: using PS5 dummy window for Vulkan direct presentation");
