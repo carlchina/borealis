@@ -1,4 +1,5 @@
-#pragma once
+#ifndef NANOVG_VK_H
+#define NANOVG_VK_H
 
 #include <stdint.h>
 #include <string.h>
@@ -35,7 +36,11 @@ void nvgDeleteVk(NVGcontext *ctx);
 }
 #endif
 
+#endif // NANOVG_VK_H
+
 #ifdef NANOVG_VULKAN_IMPLEMENTATION
+#ifndef NANOVG_VK_IMPLEMENTATION_DONE
+#define NANOVG_VK_IMPLEMENTATION_DONE
 
 // optional define to switch to VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN
 // by default used VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
@@ -1846,4 +1851,5 @@ void nvgDeleteVk(NVGcontext *ctx) {
 #if !defined(__cplusplus) || defined(NANOVG_VK_NO_nullptrPTR)
 #undef nullptr
 #endif
-#endif
+#endif // NANOVG_VK_IMPLEMENTATION_DONE
+#endif // NANOVG_VULKAN_IMPLEMENTATION
