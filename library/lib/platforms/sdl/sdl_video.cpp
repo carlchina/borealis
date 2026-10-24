@@ -279,6 +279,16 @@ SDLVideoContext::SDLVideoContext(std::string windowTitle, uint32_t windowWidth, 
     }
     SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
 
+#if defined(PS5) && defined(BOREALIS_USE_VULKAN)
+    // On PS5 with Vulkan, presentation is direct to VideoOut via VK_KHR_display.
+    // SDL is used exclusively for gamepad controller input and audio.
+    // The PS5 G19 SDL2 video driver has no Vulkan support and rejects SDL_CreateWindow.
+    static SDL_Window dummyWindow{};
+    this->window = &dummyWindow;
+    windowWidth = 1920;
+    windowHeight = 1080;
+    Logger::info("sdl: using PS5 dummy window for Vulkan direct presentation");
+#else
     if (std::isnan(windowXPos) || std::isnan(windowYPos))
     {
         this->window = SDL_CreateWindow(windowTitle.c_str(),
@@ -302,12 +312,15 @@ SDLVideoContext::SDLVideoContext(std::string windowTitle, uint32_t windowWidth, 
     {
         fatal("sdl: failed to create window");
     }
+#endif
 #ifdef BOREALIS_USE_OPENGL
     // Configure window
     SDL_GLContext context = SDL_GL_CreateContext(window);
     SDL_GL_MakeCurrent(window, context);
 #endif
+#if !(defined(PS5) && defined(BOREALIS_USE_VULKAN))
     SDL_AddEventWatch(sdlWindowEventWatcher, window);
+#endif
 #ifdef BOREALIS_USE_OPENGL
 #if !defined(__PSV__) && !defined(PS4)
     // Load OpenGL routines using glad
@@ -351,8 +364,10 @@ SDLVideoContext::SDLVideoContext(std::string windowTitle, uint32_t windowWidth, 
     setSwapInterval(VideoContext::swapInterval);
 
     // Setup window state
-    int width, height;
+    int width = windowWidth, height = windowHeight;
+#if !(defined(PS5) && defined(BOREALIS_USE_VULKAN))
     SDL_GetWindowSize(window, &width, &height);
+#endif
 
     int fWidth, fHeight;
 #ifdef BOREALIS_USE_OPENGL
@@ -375,8 +390,10 @@ SDLVideoContext::SDLVideoContext(std::string windowTitle, uint32_t windowWidth, 
         VULKAN_CONTEXT->onFramebufferSize(fWidth, fHeight, true);
 #endif
 
-    int xPos, yPos;
+    int xPos = 0, yPos = 0;
+#if !(defined(PS5) && defined(BOREALIS_USE_VULKAN))
     SDL_GetWindowPosition(window, &xPos, &yPos);
+#endif
     Application::setWindowPosition(xPos, yPos);
 
     if (!VideoContext::FULLSCREEN)
@@ -490,7 +507,9 @@ SDLVideoContext::~SDLVideoContext()
     {
         Logger::error("Cannot delete nvg Context");
     }
+#if !(defined(PS5) && defined(BOREALIS_USE_VULKAN))
     SDL_DestroyWindow(this->window);
+#endif
     SDL_Quit();
 }
 
@@ -506,6 +525,7 @@ SDL_Window* SDLVideoContext::getSDLWindow()
 
 void SDLVideoContext::fullScreen(bool fs)
 {
+#if !(defined(PS5) && defined(BOREALIS_USE_VULKAN))
 #ifdef __WINRT__
     // win32 会很模糊，而且点击事件貌似也错位了，只给 winrt 使用。
     static unsigned int flag = SDL_WINDOW_FULLSCREEN;
@@ -513,6 +533,7 @@ void SDLVideoContext::fullScreen(bool fs)
     static unsigned int flag = SDL_WINDOW_FULLSCREEN_DESKTOP;
 #endif
     SDL_SetWindowFullscreen(this->window, fs ? flag : 0);
+#endif
 }
 
 } // namespace brls

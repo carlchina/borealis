@@ -156,6 +156,7 @@ bool VulkanContext::createInstance()
 
     std::vector<const char*> extensions;
 
+#if !defined(PS5)
 #ifdef __SDL2__
     if (this->window)
     {
@@ -166,6 +167,7 @@ bool VulkanContext::createInstance()
             SDL_Vulkan_GetInstanceExtensions(this->window, &count, extensions.data());
         }
     }
+#endif
 #endif
 
     // Ensure surface and display extensions are present
@@ -197,12 +199,14 @@ bool VulkanContext::createInstance()
 
 bool VulkanContext::createSurface()
 {
+#if !defined(PS5)
 #ifdef __SDL2__
     if (this->window && SDL_Vulkan_CreateSurface(this->window, this->instance, &this->surface))
     {
         Logger::info("vulkan: created surface via SDL_Vulkan_CreateSurface");
         return true;
     }
+#endif
 #endif
 
     // Fallback: VK_KHR_display (PS5 Native VideoOut)
