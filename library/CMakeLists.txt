@@ -202,17 +202,35 @@ elseif(PLATFORM_PS5)
             ${BOREALIS_PATH}/lib/platforms/sdl
             ${BOREALIS_PATH}/lib/platforms/desktop
             ${BOREALIS_PATH}/lib/platforms/ps5)
-    list(APPEND BRLS_PLATFORM_LIBS
-            ${SDL2_LIBRARIES}
-            SceUserService
-            SceSystemService
-            SceKeyboard
-            SceImeDialog
-            SceAudioOut
-            SceVideoOut
-            ScePad
-            iconv
-            GL)
+    if (USE_VULKAN OR BOREALIS_USE_VULKAN)
+        set(BOREALIS_USE_VULKAN ON)
+        list(APPEND BOREALIS_SRC ${BOREALIS_PATH}/lib/platforms/driver/vulkan.cpp)
+        list(APPEND BRLS_PLATFORM_LIBS
+                ${SDL2_LIBRARIES}
+                SceUserService
+                SceSystemService
+                SceKeyboard
+                SceImeDialog
+                SceAudioOut
+                SceVideoOut
+                ScePad
+                iconv
+                vulkan
+                SceAgc
+                SceAgcDriver)
+    else ()
+        list(APPEND BRLS_PLATFORM_LIBS
+                ${SDL2_LIBRARIES}
+                SceUserService
+                SceSystemService
+                SceKeyboard
+                SceImeDialog
+                SceAudioOut
+                SceVideoOut
+                ScePad
+                iconv
+                GL)
+    endif ()
     list(APPEND BOREALIS_INCLUDE ${SDL2_INCLUDE_DIRS})
     list(APPEND BRLS_PLATFORM_OPTION -D__SDL2__)
     if (NOT BRLS_PLATFORM_RESOURCES_PATH)
@@ -329,6 +347,8 @@ elseif (BOREALIS_USE_GXM)
     if (USE_VITA_SHARK)
         list(APPEND BRLS_PLATFORM_OPTION -DUSE_VITA_SHARK)
     endif ()
+elseif (BOREALIS_USE_VULKAN)
+    set(BOREALIS_DRIVER BOREALIS_USE_VULKAN)
 endif ()
 list(APPEND BRLS_PLATFORM_OPTION -D${BOREALIS_DRIVER})
 message(STATUS "borealis driver ${BOREALIS_DRIVER}")

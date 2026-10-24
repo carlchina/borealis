@@ -50,8 +50,13 @@ std::string Ps5Platform::getName()
 
 void Ps5Platform::createWindow(std::string windowTitle, uint32_t windowWidth, uint32_t windowHeight, float windowXPos, float windowYPos)
 {
+#if defined(BOREALIS_USE_VULKAN)
+    windowWidth  = 3840;
+    windowHeight = 2160;
+#else
     windowWidth  = 1920;
     windowHeight = 1080;
+#endif
 
     this->videoContext = new SDLVideoContext(windowTitle, windowWidth, windowHeight, NAN, NAN);
     this->inputManager = new SDLInputManager(this->videoContext->getSDLWindow());
