@@ -872,10 +872,15 @@ static int vknvg_UpdateTexture(VkDevice device, VKNVGtexture *tex, int dx, int d
     return 0;
   }
   int comp_size = (tex->type == NVG_TEXTURE_RGBA) ? 4 : 1;
-  for (int y = 0; y < h; ++y) {
-    char *src = (char *)data + ((dy + y) * (tex->width * comp_size)) + (dx * comp_size);
-    char *dest = (char *)bindptr + ((dy + y) * layout.rowPitch) + (dx * comp_size);
-    memcpy(dest, src, w * comp_size);
+  size_t row_bytes = (size_t)w * comp_size;
+  if (dx == 0 && dy == 0 && w == tex->width && (size_t)layout.rowPitch == row_bytes) {
+    memcpy(bindptr, data, row_bytes * h);
+  } else {
+    for (int y = 0; y < h; ++y) {
+      char *src = (char *)data + ((dy + y) * (tex->width * comp_size)) + (dx * comp_size);
+      char *dest = (char *)bindptr + ((dy + y) * layout.rowPitch) + (dx * comp_size);
+      memcpy(dest, src, row_bytes);
+    }
   }
   VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
   range.memory = tex->mem;
@@ -1615,18 +1620,7 @@ static int vknvg_renderCreateTexture(void *uptr, int type, int w, int h, int ima
     int tx_format=1;
     if(type == NVG_TEXTURE_RGBA)tx_format=4;
     size_t texture_size = w * h * tx_format * sizeof(uint8_t);
-    uint8_t *generated_texture = (uint8_t*)malloc(texture_size);
-    for (uint32_t i = 0; i < (uint32_t) w; ++i){
-        for (uint32_t j = 0; j < (uint32_t) h; ++j){
-            size_t pixel = (i + j * w) * tx_format * sizeof(uint8_t);
-            if (type == NVG_TEXTURE_RGBA) {
-              generated_texture[pixel + 0] = 0x00;
-              generated_texture[pixel + 1] = 0x00;
-              generated_texture[pixel + 2] = 0x00;
-              generated_texture[pixel + 3] = 0x00;
-            }else generated_texture[pixel + 0] = 0x00;
-        }
-    }
+    uint8_t *generated_texture = (uint8_t*)calloc(1, texture_size);
     vknvg_UpdateTexture(device, tex, 0, 0, w, h, generated_texture);
     free(generated_texture);
   }
