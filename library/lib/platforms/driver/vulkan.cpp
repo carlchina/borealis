@@ -765,13 +765,14 @@ bool VulkanContext::onFramebufferSize(int width, int height, bool init)
 
 void VulkanContext::beginFrame()
 {
-    VkResult fenceRes = vkWaitForFences(this->device, 1, &this->inFlightFences[this->currentFrame], VK_TRUE, 1000000000ULL);
-    if (fenceRes == VK_TIMEOUT)
+    VkResult fenceRes = vkWaitForFences(this->device, 1, &this->inFlightFences[this->currentFrame], VK_TRUE, UINT64_MAX);
+    if (fenceRes != VK_SUCCESS)
     {
-        Logger::error("vulkan: vkWaitForFences timed out on frame {}", this->currentFrame);
+        Logger::error("vulkan: vkWaitForFences failed ({}) on frame {}", (int)fenceRes, this->currentFrame);
+        return;
     }
 
-    VkResult result = vkAcquireNextImageKHR(this->device, this->swapchain, 1000000000ULL,
+    VkResult result = vkAcquireNextImageKHR(this->device, this->swapchain, UINT64_MAX,
                                             this->imageAvailableSemaphores[this->currentFrame],
                                             VK_NULL_HANDLE, &this->currentImageIndex);
 
@@ -780,9 +781,9 @@ void VulkanContext::beginFrame()
         recreateSwapchain(this->windowWidth, this->windowHeight);
         return;
     }
-    if (result == VK_TIMEOUT)
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
     {
-        Logger::error("vulkan: vkAcquireNextImageKHR timed out on frame {}", this->currentFrame);
+        Logger::error("vulkan: vkAcquireNextImageKHR failed ({}) on frame {}", (int)result, this->currentFrame);
         return;
     }
 
@@ -883,10 +884,17 @@ void VulkanContext::endFrame()
         Logger::info("ps5: sceSystemServiceHideSplashScreen called after first Vulkan present (result: {:#x})", rc);
     }
 #endif
+#if defined(PS5)
+    if (result == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        recreateSwapchain(this->windowWidth, this->windowHeight);
+    }
+#else
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
     {
         recreateSwapchain(this->windowWidth, this->windowHeight);
     }
+#endif
 
     this->currentFrame = (this->currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }

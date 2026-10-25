@@ -161,6 +161,14 @@ typedef struct VKNVGDepthSimplePipeline {
   VkPipelineLayout pipelineLayout;
 } VKNVGDepthSimplePipeline;
 
+typedef struct VKNVGpendingDelete {
+  VkImage image;
+  VkDeviceMemory mem;
+  VkImageView view;
+  VkSampler sampler;
+  uint64_t frameSubmitted;
+} VKNVGpendingDelete;
+
 typedef struct VKNVGcontext {
   VKNVGCreateInfo createInfo;
 
@@ -174,6 +182,13 @@ typedef struct VKNVGcontext {
   VKNVGtexture *textures;
   int ntextures;
   int ctextures;
+
+  VKNVGtexture dummyTexture;
+
+  VKNVGpendingDelete *pendingDeletes;
+  int npendingDeletes;
+  int cpendingDeletes;
+  uint64_t frameCounter;
 
   VkDescriptorSetLayout descLayout;
   VkPipelineLayout pipelineLayout;
@@ -281,28 +296,36 @@ static int vknvg_textureId(VKNVGcontext *vk, VKNVGtexture *tex) {
   return (int)id + 1;
 }
 static int vknvg_deleteTexture(VKNVGcontext *vk, VKNVGtexture *tex) {
-  VkDevice device = vk->createInfo.device;
-  const VkAllocationCallbacks *allocator = vk->createInfo.allocator;
-  if (tex) {
-    if (tex->view != VK_NULL_HANDLE) {
-      vkDestroyImageView(device, tex->view, allocator);
-      tex->view = VK_NULL_HANDLE;
-    }
-    if (tex->sampler != VK_NULL_HANDLE) {
-      vkDestroySampler(device, tex->sampler, allocator);
-      tex->sampler = VK_NULL_HANDLE;
-    }
-    if (tex->image != VK_NULL_HANDLE) {
-      vkDestroyImage(device, tex->image, allocator);
-      tex->image = VK_NULL_HANDLE;
-    }
-    if (tex->mem != VK_NULL_HANDLE) {
-      vkFreeMemory(device, tex->mem, allocator);
-      tex->mem = VK_NULL_HANDLE;
-    }
+  if (!tex || tex->image == VK_NULL_HANDLE) {
+    return 0;
+  }
+  if (tex == &vk->dummyTexture) {
     return 1;
   }
-  return 0;
+
+  if (vk->npendingDeletes + 1 > vk->cpendingDeletes) {
+    int c = (vk->cpendingDeletes == 0) ? 64 : vk->cpendingDeletes * 2;
+    VKNVGpendingDelete *p = (VKNVGpendingDelete *)realloc(vk->pendingDeletes, c * sizeof(VKNVGpendingDelete));
+    if (p) {
+      vk->pendingDeletes = p;
+      vk->cpendingDeletes = c;
+    }
+  }
+
+  if (vk->npendingDeletes < vk->cpendingDeletes) {
+    VKNVGpendingDelete *item = &vk->pendingDeletes[vk->npendingDeletes++];
+    item->image = tex->image;
+    item->mem = tex->mem;
+    item->view = tex->view;
+    item->sampler = tex->sampler;
+    item->frameSubmitted = vk->frameCounter;
+  }
+
+  tex->image = VK_NULL_HANDLE;
+  tex->mem = VK_NULL_HANDLE;
+  tex->view = VK_NULL_HANDLE;
+  tex->sampler = VK_NULL_HANDLE;
+  return 1;
 }
 
 static VKNVGPipeline *vknvg_allocPipeline(VKNVGcontext *vk) {
@@ -487,7 +510,8 @@ static void vknvg_destroyBuffer(VkDevice device, const VkAllocationCallbacks *al
 static void vknvg_UpdateBuffer(VkDevice device, const VkAllocationCallbacks *allocator, VKNVGBuffer *buffer, VkPhysicalDeviceMemoryProperties memoryProperties, VkBufferUsageFlags usage, VkFlags memory_type, void *data, uint32_t size) {
   if (buffer->size < size) {
     vknvg_destroyBuffer(device, allocator, buffer);
-    *buffer = vknvg_createBuffer(device, memoryProperties, allocator, usage, memory_type, data, size);
+    uint32_t newSize = vknvg_maxi(size * 2, 65536);
+    *buffer = vknvg_createBuffer(device, memoryProperties, allocator, usage, memory_type, data, newSize);
   } else {
     memcpy(buffer->mapped, data, size);
   }
@@ -853,6 +877,11 @@ static int vknvg_UpdateTexture(VkDevice device, VKNVGtexture *tex, int dx, int d
     char *dest = (char *)bindptr + ((dy + y) * layout.rowPitch) + (dx * comp_size);
     memcpy(dest, src, w * comp_size);
   }
+  VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+  range.memory = tex->mem;
+  range.offset = 0;
+  range.size = VK_WHOLE_SIZE;
+  vkFlushMappedMemoryRanges(device, 1, &range);
   vkUnmapMemory(device, tex->mem);
   return 1;
 }
@@ -1061,39 +1090,28 @@ static void vknvg_setUniforms(VKNVGcontext *vk, VkDescriptorSet descSet, int uni
   writes[1].pBufferInfo = &uniform_buffer_info;
   writes[1].dstBinding = 1;
 
-  VkDescriptorImageInfo image_info;
-  
+  VkDescriptorImageInfo image_info = {};
+
   VKNVGtexture *tex = NULL;
-  if (image != 0) {
+  if (image > 0) {
     tex = vknvg_findTexture(vk, image);
   }
-  if (!tex || tex->image == VK_NULL_HANDLE) {
-    tex = vknvg_findTexture(vk, 1);
-  }
-  if (!tex || tex->image == VK_NULL_HANDLE) {
-    for (int t = 0; t < vk->ntextures; t++) {
-      if (vk->textures[t].image != VK_NULL_HANDLE) {
-        tex = &vk->textures[t];
-        break;
-      }
-    }
+  if (!tex || tex->image == VK_NULL_HANDLE || tex->view == VK_NULL_HANDLE || tex->sampler == VK_NULL_HANDLE) {
+    tex = &vk->dummyTexture;
   }
 
-  uint32_t writeCount = 2;
-  if (tex && tex->image != VK_NULL_HANDLE && tex->view != VK_NULL_HANDLE && tex->sampler != VK_NULL_HANDLE) {
-    image_info.imageLayout = tex->imageLayout;
-    image_info.imageView = tex->view;
-    image_info.sampler = tex->sampler;
+  image_info.imageLayout = tex->imageLayout;
+  image_info.imageView = tex->view;
+  image_info.sampler = tex->sampler;
 
-    writes[2].dstSet = descSet;
-    writes[2].dstBinding = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[2].pImageInfo = &image_info;
-    writeCount = 3;
-  }
+  writes[2].dstSet = descSet;
+  writes[2].dstBinding = 2;
+  writes[2].descriptorCount = 1;
+  writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  writes[2].pImageInfo = &image_info;
+  writes[2].dstArrayElement = 0;
 
-  vkUpdateDescriptorSets(device, writeCount, writes, 0, nullptr);
+  vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
 }
 
 static void vknvg_fill(VKNVGcontext *vk, VKNVGcall *call, uint32_t descriptor_offset) {
@@ -1317,6 +1335,79 @@ static void vknvg_triangles(VKNVGcontext *vk, VKNVGcall *call, uint32_t descript
   vkCmdDraw(cmdBuffer, call->triangleCount, 1, 0, 0);
 }
 ///==================================================================================================================
+static void vknvg_createDummyTexture(VKNVGcontext *vk) {
+  VkDevice device = vk->createInfo.device;
+  const VkAllocationCallbacks *allocator = vk->createInfo.allocator;
+
+  VkImageCreateInfo image_createInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+  image_createInfo.pNext = nullptr;
+  image_createInfo.imageType = VK_IMAGE_TYPE_2D;
+  image_createInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+  image_createInfo.extent.width = 1;
+  image_createInfo.extent.height = 1;
+  image_createInfo.extent.depth = 1;
+  image_createInfo.mipLevels = 1;
+  image_createInfo.arrayLayers = 1;
+  image_createInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+  image_createInfo.tiling = VK_IMAGE_TILING_LINEAR;
+  image_createInfo.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
+  image_createInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+  image_createInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+  NVGVK_CHECK_RESULT(vkCreateImage(device, &image_createInfo, allocator, &vk->dummyTexture.image));
+
+  VkMemoryRequirements mem_reqs;
+  vkGetImageMemoryRequirements(device, vk->dummyTexture.image, &mem_reqs);
+
+  VkMemoryAllocateInfo mem_alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+  mem_alloc.allocationSize = mem_reqs.size;
+  NVGVK_CHECK_RESULT(vknvg_memory_type_from_properties(vk->memoryProperties, mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &mem_alloc.memoryTypeIndex));
+  NVGVK_CHECK_RESULT(vkAllocateMemory(device, &mem_alloc, allocator, &vk->dummyTexture.mem));
+  NVGVK_CHECK_RESULT(vkBindImageMemory(device, vk->dummyTexture.image, vk->dummyTexture.mem, 0));
+
+  void *data = nullptr;
+  if (vkMapMemory(device, vk->dummyTexture.mem, 0, mem_reqs.size, 0, &data) == VK_SUCCESS && data) {
+    memset(data, 0xFF, mem_reqs.size);
+    VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+    range.memory = vk->dummyTexture.mem;
+    range.offset = 0;
+    range.size = VK_WHOLE_SIZE;
+    vkFlushMappedMemoryRanges(device, 1, &range);
+    vkUnmapMemory(device, vk->dummyTexture.mem);
+  }
+
+  VkSamplerCreateInfo samplerCreateInfo = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+  samplerCreateInfo.magFilter = VK_FILTER_LINEAR;
+  samplerCreateInfo.minFilter = VK_FILTER_LINEAR;
+  samplerCreateInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  samplerCreateInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerCreateInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerCreateInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerCreateInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+  NVGVK_CHECK_RESULT(vkCreateSampler(device, &samplerCreateInfo, allocator, &vk->dummyTexture.sampler));
+
+  VkImageViewCreateInfo view_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+  view_info.image = vk->dummyTexture.image;
+  view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  view_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+  view_info.components.r = VK_COMPONENT_SWIZZLE_R;
+  view_info.components.g = VK_COMPONENT_SWIZZLE_G;
+  view_info.components.b = VK_COMPONENT_SWIZZLE_B;
+  view_info.components.a = VK_COMPONENT_SWIZZLE_A;
+  view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  view_info.subresourceRange.baseMipLevel = 0;
+  view_info.subresourceRange.levelCount = 1;
+  view_info.subresourceRange.baseArrayLayer = 0;
+  view_info.subresourceRange.layerCount = 1;
+  NVGVK_CHECK_RESULT(vkCreateImageView(device, &view_info, allocator, &vk->dummyTexture.view));
+
+  vk->dummyTexture.width = 1;
+  vk->dummyTexture.height = 1;
+  vk->dummyTexture.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  vk->dummyTexture.type = NVG_TEXTURE_RGBA;
+  vk->dummyTexture.flags = 0;
+}
+
 static int vknvg_renderCreate(void *uptr) {
   VKNVGcontext *vk = (VKNVGcontext *)uptr;
   VkDevice device = vk->createInfo.device;
@@ -1355,6 +1446,29 @@ static int vknvg_renderCreate(void *uptr) {
     allocInfo.commandBufferCount = 1;
     NVGVK_CHECK_RESULT(vkAllocateCommandBuffers(device, &allocInfo, &vk->initCmdBuffer));
   }
+
+  uint32_t maxFramesInFlight = vk->createInfo.swapchainImageCount;
+  vk->vertexBuffer = (VKNVGBuffer*)calloc(maxFramesInFlight, sizeof(VKNVGBuffer));
+  vk->fragUniformBuffer = (VKNVGBuffer*)calloc(maxFramesInFlight, sizeof(VKNVGBuffer));
+  vk->vertUniformBuffer = (VKNVGBuffer*)calloc(maxFramesInFlight, sizeof(VKNVGBuffer));
+
+  vk->cdescPool = 4096;
+  uint32_t totalSets = vk->cdescPool * vk->createInfo.swapchainImageCount;
+  vk->descPool = vknvg_createDescriptorPool(device, totalSets, allocator);
+
+  VkDescriptorSetAllocateInfo alloc_info = {
+      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, vk->descPool, 1, &vk->descLayout
+  };
+
+  vk->uniformDescriptorSet1 = (VkDescriptorSet *) calloc(totalSets, sizeof(VkDescriptorSet));
+  vk->uniformDescriptorSet2 = (VkDescriptorSet *) calloc(totalSets, sizeof(VkDescriptorSet));
+
+  for (uint32_t i = 0; i < totalSets; i++) {
+    NVGVK_CHECK_RESULT(vkAllocateDescriptorSets(device, &alloc_info, &vk->uniformDescriptorSet1[i]));
+    NVGVK_CHECK_RESULT(vkAllocateDescriptorSets(device, &alloc_info, &vk->uniformDescriptorSet2[i]));
+  }
+
+  vknvg_createDummyTexture(vk);
 
   return 1;
 }
@@ -1567,60 +1681,55 @@ static void vknvg_renderFlush(void *uptr) {
   VkPhysicalDeviceMemoryProperties memoryProperties = vk->memoryProperties;
   const VkAllocationCallbacks *allocator = vk->createInfo.allocator;
 
-  if(vk->vertexBuffer == nullptr){
-    uint32_t maxFramesInFlight = vk->createInfo.swapchainImageCount;
-    vk->vertexBuffer = (VKNVGBuffer*)calloc(maxFramesInFlight, sizeof(VKNVGBuffer));
-    vk->fragUniformBuffer = (VKNVGBuffer*)calloc(maxFramesInFlight, sizeof(VKNVGBuffer));
-    vk->vertUniformBuffer = (VKNVGBuffer*)calloc(maxFramesInFlight, sizeof(VKNVGBuffer));
+  vk->frameCounter++;
+
+  // Clean up deferred deleted textures from retired frames
+  if (vk->npendingDeletes > 0) {
+    int writeIdx = 0;
+    uint32_t safetyMargin = vk->createInfo.swapchainImageCount + 1;
+    for (int i = 0; i < vk->npendingDeletes; i++) {
+      VKNVGpendingDelete *item = &vk->pendingDeletes[i];
+      if (vk->frameCounter - item->frameSubmitted >= safetyMargin) {
+        if (item->view != VK_NULL_HANDLE) vkDestroyImageView(device, item->view, allocator);
+        if (item->sampler != VK_NULL_HANDLE) vkDestroySampler(device, item->sampler, allocator);
+        if (item->image != VK_NULL_HANDLE) vkDestroyImage(device, item->image, allocator);
+        if (item->mem != VK_NULL_HANDLE) vkFreeMemory(device, item->mem, allocator);
+      } else {
+        if (writeIdx != i) {
+          vk->pendingDeletes[writeIdx] = *item;
+        }
+        writeIdx++;
+      }
+    }
+    vk->npendingDeletes = writeIdx;
   }
 
-  int i;
   if (vk->ncalls > 0) {
+    if (vk->ncalls > vk->cdescPool) {
+      vk->ncalls = vk->cdescPool;
+    }
+
     VkFlags flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     vknvg_UpdateBuffer(device, allocator, &vk->vertexBuffer[currentFrame], memoryProperties, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, flags, vk->verts, vk->nverts * sizeof(vk->verts[0]));
-    vknvg_UpdateBuffer(device, allocator, &vk->fragUniformBuffer[currentFrame], memoryProperties, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,flags, vk->uniforms, vk->nuniforms * vk->fragSize);
+    vknvg_UpdateBuffer(device, allocator, &vk->fragUniformBuffer[currentFrame], memoryProperties, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, flags, vk->uniforms, vk->nuniforms * vk->fragSize);
     vknvg_UpdateBuffer(device, allocator, &vk->vertUniformBuffer[currentFrame], memoryProperties, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, flags, vk->view, sizeof(vk->view));
     vk->currentPipeline = nullptr;
 
-    if (vk->ncalls > vk->cdescPool) {
-      if (vk->descPool != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(device);
-        vkDestroyDescriptorPool(device, vk->descPool, allocator);
-      }
-      uint32_t newCount = (vk->ncalls < 256) ? 512 : (vk->ncalls * 2);
-      vk->descPool = vknvg_createDescriptorPool(device, newCount * vk->createInfo.swapchainImageCount, allocator);
-
-      VkDescriptorSetAllocateInfo alloc_info[1] = {
-              {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, vk->descPool, 1, &vk->descLayout},
-      };
-
-      free(vk->uniformDescriptorSet1);
-      free(vk->uniformDescriptorSet2);
-      vk->uniformDescriptorSet1 = (VkDescriptorSet *) calloc(newCount * vk->createInfo.swapchainImageCount, sizeof(VkDescriptorSet));
-      vk->uniformDescriptorSet2 = (VkDescriptorSet *) calloc(newCount * vk->createInfo.swapchainImageCount, sizeof(VkDescriptorSet));
-
-      for (i = 0; i < (int)(newCount * vk->createInfo.swapchainImageCount); i++) {
-        NVGVK_CHECK_RESULT(vkAllocateDescriptorSets(device, alloc_info, &vk->uniformDescriptorSet1[i]))
-        NVGVK_CHECK_RESULT(vkAllocateDescriptorSets(device, alloc_info, &vk->uniformDescriptorSet2[i]))
-      }
-
-      vk->cdescPool = newCount;
+    uint32_t descriptor_offset = vk->cdescPool * currentFrame;
+    for (uint32_t i = 0; i < vk->ncalls; i++) {
+        VKNVGcall *call = &vk->calls[i];
+        if (call->type == VKNVG_FILL) {
+            vknvg_fill(vk, call, descriptor_offset + i);
+        } else if (call->type == VKNVG_CONVEXFILL) {
+            vknvg_convexFill(vk, call, descriptor_offset + i);
+        } else if (call->type == VKNVG_STROKE) {
+            vknvg_stroke(vk, call, descriptor_offset + i);
+        } else if (call->type == VKNVG_TRIANGLES) {
+            vknvg_triangles(vk, call, descriptor_offset + i);
+        }
     }
-
-      uint32_t descriptor_offset = vk->cdescPool * currentFrame; //ensure descriptor sets dont clash
-      for (i = 0; i < vk->ncalls; i++) {
-          VKNVGcall *call = &vk->calls[i];
-          if (call->type == VKNVG_FILL) {
-              vknvg_fill(vk, call, descriptor_offset + i);
-          } else if (call->type == VKNVG_CONVEXFILL) {
-              vknvg_convexFill(vk, call, descriptor_offset + i);
-          } else if (call->type == VKNVG_STROKE) {
-              vknvg_stroke(vk, call, descriptor_offset + i);
-          } else if (call->type == VKNVG_TRIANGLES) {
-              vknvg_triangles(vk, call, descriptor_offset + i);
-          }
-      }
   }
+
   // Reset calls
   vk->nverts = 0;
   vk->npaths = 0;
@@ -1841,6 +1950,22 @@ static void vknvg_renderDelete(void *uptr) {
       vknvg_deleteTexture(vk, &vk->textures[i]);
     }
   }
+
+  // Delete dummy texture
+  if (vk->dummyTexture.view != VK_NULL_HANDLE) vkDestroyImageView(device, vk->dummyTexture.view, allocator);
+  if (vk->dummyTexture.sampler != VK_NULL_HANDLE) vkDestroySampler(device, vk->dummyTexture.sampler, allocator);
+  if (vk->dummyTexture.image != VK_NULL_HANDLE) vkDestroyImage(device, vk->dummyTexture.image, allocator);
+  if (vk->dummyTexture.mem != VK_NULL_HANDLE) vkFreeMemory(device, vk->dummyTexture.mem, allocator);
+
+  // Clean up all pending deletes
+  for (int i = 0; i < vk->npendingDeletes; i++) {
+    VKNVGpendingDelete *item = &vk->pendingDeletes[i];
+    if (item->view != VK_NULL_HANDLE) vkDestroyImageView(device, item->view, allocator);
+    if (item->sampler != VK_NULL_HANDLE) vkDestroySampler(device, item->sampler, allocator);
+    if (item->image != VK_NULL_HANDLE) vkDestroyImage(device, item->image, allocator);
+    if (item->mem != VK_NULL_HANDLE) vkFreeMemory(device, item->mem, allocator);
+  }
+  free(vk->pendingDeletes);
 
   for (int i = 0; i < vk->createInfo.swapchainImageCount; i++) {
     vknvg_destroyBuffer(device, allocator, &vk->vertexBuffer[i]);
