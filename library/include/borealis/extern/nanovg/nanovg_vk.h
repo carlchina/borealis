@@ -868,7 +868,8 @@ static int vknvg_UpdateTexture(VkDevice device, VKNVGtexture *tex, int dx, int d
   /* Get the subresource layout so we know what the row pitch is */
   vkGetImageSubresourceLayout(device, tex->image, &subres, &layout);
   NVGVK_CHECK_RESULT(vkMapMemory(device, tex->mem, 0, mem_reqs.size, 0, &bindptr));
-  if (!bindptr) {
+  if (!bindptr || !data) {
+    if (bindptr) vkUnmapMemory(device, tex->mem);
     return 0;
   }
   int comp_size = (tex->type == NVG_TEXTURE_RGBA) ? 4 : 1;
@@ -1621,8 +1622,10 @@ static int vknvg_renderCreateTexture(void *uptr, int type, int w, int h, int ima
     if(type == NVG_TEXTURE_RGBA)tx_format=4;
     size_t texture_size = w * h * tx_format * sizeof(uint8_t);
     uint8_t *generated_texture = (uint8_t*)calloc(1, texture_size);
-    vknvg_UpdateTexture(device, tex, 0, 0, w, h, generated_texture);
-    free(generated_texture);
+    if (generated_texture) {
+      vknvg_UpdateTexture(device, tex, 0, 0, w, h, generated_texture);
+      free(generated_texture);
+    }
   }
 
   vknvg_InitTexture(vk, tex);
