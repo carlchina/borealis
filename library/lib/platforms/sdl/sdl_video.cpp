@@ -382,6 +382,19 @@ SDLVideoContext::SDLVideoContext(std::string windowTitle, uint32_t windowWidth, 
     Application::setWindowSize(fWidth, fHeight);
     D3D11_CONTEXT->onFramebufferSize(fWidth, fHeight);
 #elif defined(BOREALIS_USE_VULKAN)
+#if defined(PS5)
+    if (VULKAN_CONTEXT)
+    {
+        VkExtent2D extent = VULKAN_CONTEXT->getSwapchainExtent();
+        if (extent.width > 0 && extent.height > 0)
+        {
+            fWidth = extent.width;
+            fHeight = extent.height;
+            width = extent.width;
+            height = extent.height;
+        }
+    }
+#endif
     scaleFactor      = VULKAN_CONTEXT ? VULKAN_CONTEXT->getScaleFactor() : 1.0;
     fWidth           = width;
     fHeight          = height;

@@ -27,6 +27,10 @@
 #include <cstring>
 #include <set>
 
+#if defined(PS5)
+extern "C" int sceSystemServiceHideSplashScreen(void);
+#endif
+
 namespace brls
 {
 
@@ -259,6 +263,11 @@ bool VulkanContext::createSurface()
 
     Logger::info("vulkan: created surface via VK_KHR_display ({}x{})", 
                  surfaceCreateInfo.imageExtent.width, surfaceCreateInfo.imageExtent.height);
+
+#if defined(PS5)
+    sceSystemServiceHideSplashScreen();
+#endif
+
     return true;
 }
 
@@ -855,6 +864,15 @@ void VulkanContext::endFrame()
     presentInfo.pImageIndices   = &this->currentImageIndex;
 
     VkResult result = vkQueuePresentKHR(this->presentQueue, &presentInfo);
+#if defined(PS5)
+    static bool s_splashHidden = false;
+    if (!s_splashHidden && result == VK_SUCCESS)
+    {
+        s_splashHidden = true;
+        int rc = sceSystemServiceHideSplashScreen();
+        Logger::info("ps5: sceSystemServiceHideSplashScreen called after first Vulkan present (result: {:#x})", rc);
+    }
+#endif
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
     {
         recreateSwapchain(this->windowWidth, this->windowHeight);
