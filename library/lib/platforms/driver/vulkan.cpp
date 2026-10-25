@@ -796,6 +796,14 @@ void VulkanContext::beginFrame()
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     vkBeginCommandBuffer(cmd, &beginInfo);
 
+    if (this->currentImageIndex >= this->swapchainFramebuffers.size() ||
+        this->swapchainFramebuffers[this->currentImageIndex] == VK_NULL_HANDLE ||
+        this->renderPass == VK_NULL_HANDLE)
+    {
+        Logger::error("vulkan: invalid swapchain framebuffer or renderPass");
+        return;
+    }
+
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassInfo.renderPass        = this->renderPass;

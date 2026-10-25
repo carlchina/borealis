@@ -296,7 +296,7 @@ static int vknvg_textureId(VKNVGcontext *vk, VKNVGtexture *tex) {
   return (int)id + 1;
 }
 static int vknvg_deleteTexture(VKNVGcontext *vk, VKNVGtexture *tex) {
-  if (!tex || tex->image == VK_NULL_HANDLE) {
+  if (!vk || !tex || tex->image == VK_NULL_HANDLE) {
     return 0;
   }
   if (tex == &vk->dummyTexture) {
@@ -859,6 +859,9 @@ static VkPipeline vknvg_bindPipeline(VKNVGcontext *vk, VkCommandBuffer cmdBuffer
 }
 
 static int vknvg_UpdateTexture(VkDevice device, VKNVGtexture *tex, int dx, int dy, int w, int h, const unsigned char *data) {
+  if (!tex || tex->image == VK_NULL_HANDLE || !tex->mem || !data || w <= 0 || h <= 0) {
+    return 0;
+  }
 
   VkMemoryRequirements mem_reqs;
   vkGetImageMemoryRequirements(device, tex->image, &mem_reqs);
@@ -867,9 +870,8 @@ static int vknvg_UpdateTexture(VkDevice device, VKNVGtexture *tex, int dx, int d
   void *bindptr = NULL;
   /* Get the subresource layout so we know what the row pitch is */
   vkGetImageSubresourceLayout(device, tex->image, &subres, &layout);
-  NVGVK_CHECK_RESULT(vkMapMemory(device, tex->mem, 0, mem_reqs.size, 0, &bindptr));
-  if (!bindptr || !data) {
-    if (bindptr) vkUnmapMemory(device, tex->mem);
+  VkResult res = vkMapMemory(device, tex->mem, 0, mem_reqs.size, 0, &bindptr);
+  if (res != VK_SUCCESS || !bindptr) {
     return 0;
   }
   int comp_size = (tex->type == NVG_TEXTURE_RGBA) ? 4 : 1;
@@ -1633,22 +1635,25 @@ static int vknvg_renderCreateTexture(void *uptr, int type, int w, int h, int ima
   return vknvg_textureId(vk, tex);
 }
 static int vknvg_renderDeleteTexture(void *uptr, int image) {
-
   VKNVGcontext *vk = (VKNVGcontext *)uptr;
+  if (!vk || image <= 0) return 0;
 
   VKNVGtexture *tex = vknvg_findTexture(vk, image);
+  if (!tex) return 0;
 
   return vknvg_deleteTexture(vk, tex);
 }
 static int vknvg_renderUpdateTexture(void *uptr, int image, int x, int y, int w, int h, const unsigned char *data) {
   VKNVGcontext *vk = (VKNVGcontext *)uptr;
+  if (!vk || image <= 0 || !data) return 0;
 
   VKNVGtexture *tex = vknvg_findTexture(vk, image);
-  vknvg_UpdateTexture(vk->createInfo.device, tex, x, y, w, h, data);
-  return 1;
+  if (!tex) return 0;
+  return vknvg_UpdateTexture(vk->createInfo.device, tex, x, y, w, h, data);
 }
 static int vknvg_renderGetTextureSize(void *uptr, int image, int *w, int *h) {
   VKNVGcontext *vk = (VKNVGcontext *)uptr;
+  if (!vk || image <= 0) return 0;
   VKNVGtexture *tex = vknvg_findTexture(vk, image);
   if (tex) {
     *w = tex->width;
