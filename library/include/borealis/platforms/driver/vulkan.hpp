@@ -52,6 +52,7 @@ public:
     VkQueue getGraphicsQueue() const { return this->graphicsQueue; }
     uint32_t getGraphicsQueueFamilyIndex() const { return this->graphicsQueueFamilyIndex; }
     VkRenderPass getRenderPass() const { return this->renderPass; }
+    VkCommandPool getCommandPool() const { return this->commandPool; }
     VkCommandBuffer getCurrentCommandBuffer() const { return this->commandBuffers[this->currentFrame]; }
     uint32_t getCurrentFrame() const { return this->currentFrame; }
     uint32_t getSwapchainImageCount() const { return static_cast<uint32_t>(this->swapchainImages.size()); }

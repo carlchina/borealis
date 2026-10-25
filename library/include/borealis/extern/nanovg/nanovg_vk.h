@@ -21,6 +21,7 @@ typedef struct VKNVGCreateInfo {
   VkDevice device;
   VkRenderPass renderpass;
   VkCommandBuffer *cmdBuffer;
+  VkCommandPool commandPool;
   uint32_t swapchainImageCount;
   uint32_t *currentFrame;
 
@@ -212,6 +213,7 @@ typedef struct VKNVGcontext {
   VkShaderModule fillFragShaderAA;
   VkShaderModule fillVertShader;
   VkQueue queue;
+  VkCommandBuffer initCmdBuffer;
 } VKNVGcontext;
 
 static int vknvg_maxi(int a, int b) { return a > b ? a : b; }
@@ -853,7 +855,13 @@ static int vknvg_UpdateTexture(VkDevice device, VKNVGtexture *tex, int dx, int d
 }
 
 // call it after vknvg_UpdateTexture
-static void vknvg_InitTexture(VkCommandBuffer cmdbuffer, VkQueue queue, VKNVGtexture *tex) {
+static void vknvg_InitTexture(VKNVGcontext *vk, VKNVGtexture *tex) {
+    VkCommandBuffer cmdbuffer = vk->initCmdBuffer;
+    if (cmdbuffer == VK_NULL_HANDLE) {
+        uint32_t currentFrame = *vk->createInfo.currentFrame;
+        cmdbuffer = vk->createInfo.cmdBuffer[currentFrame];
+    }
+    VkQueue queue = vk->queue;
 #ifdef __cplusplus
     VkCommandBufferBeginInfo beginInfo = {};
 #else
@@ -1313,6 +1321,16 @@ static int vknvg_renderCreate(void *uptr) {
 
   vk->descLayout = vknvg_createDescriptorSetLayout(device, allocator);
   vk->pipelineLayout = vknvg_createPipelineLayout(device, vk->descLayout, allocator);
+
+  if (vk->createInfo.commandPool != VK_NULL_HANDLE) {
+    VkCommandBufferAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocInfo.pNext = nullptr;
+    allocInfo.commandPool = vk->createInfo.commandPool;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+    NVGVK_CHECK_RESULT(vkAllocateCommandBuffers(device, &allocInfo, &vk->initCmdBuffer));
+  }
+
   return 1;
 }
 
@@ -1448,8 +1466,7 @@ static int vknvg_renderCreateTexture(void *uptr, int type, int w, int h, int ima
     free(generated_texture);
   }
 
-  uint32_t currentFrame = *vk->createInfo.currentFrame;
-  vknvg_InitTexture(vk->createInfo.cmdBuffer[currentFrame], vk->queue, tex);
+  vknvg_InitTexture(vk, tex);
 
   return vknvg_textureId(vk, tex);
 }
@@ -1779,6 +1796,11 @@ static void vknvg_renderDelete(void *uptr) {
   vkDestroyShaderModule(device, vk->fillVertShader, allocator);
   vkDestroyShaderModule(device, vk->fillFragShader, allocator);
   vkDestroyShaderModule(device, vk->fillFragShaderAA, allocator);
+
+  if (vk->initCmdBuffer != VK_NULL_HANDLE && vk->createInfo.commandPool != VK_NULL_HANDLE) {
+    vkFreeCommandBuffers(device, vk->createInfo.commandPool, 1, &vk->initCmdBuffer);
+    vk->initCmdBuffer = VK_NULL_HANDLE;
+  }
 
   vkDestroyDescriptorPool(device, vk->descPool, allocator);
   vkDestroyDescriptorSetLayout(device, vk->descLayout, allocator);

@@ -74,6 +74,7 @@ VKNVGCreateInfo VulkanContext::getNVGCreateInfo()
     info.device              = this->device;
     info.renderpass          = this->renderPass;
     info.cmdBuffer           = this->commandBuffers.data();
+    info.commandPool         = this->commandPool;
     info.swapchainImageCount = static_cast<uint32_t>(this->swapchainImages.size());
     info.currentFrame        = &this->currentFrame;
     info.allocator           = nullptr;
