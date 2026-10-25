@@ -765,15 +765,24 @@ bool VulkanContext::onFramebufferSize(int width, int height, bool init)
 
 void VulkanContext::beginFrame()
 {
-    vkWaitForFences(this->device, 1, &this->inFlightFences[this->currentFrame], VK_TRUE, UINT64_MAX);
+    VkResult fenceRes = vkWaitForFences(this->device, 1, &this->inFlightFences[this->currentFrame], VK_TRUE, 1000000000ULL);
+    if (fenceRes == VK_TIMEOUT)
+    {
+        Logger::error("vulkan: vkWaitForFences timed out on frame {}", this->currentFrame);
+    }
 
-    VkResult result = vkAcquireNextImageKHR(this->device, this->swapchain, UINT64_MAX,
+    VkResult result = vkAcquireNextImageKHR(this->device, this->swapchain, 1000000000ULL,
                                             this->imageAvailableSemaphores[this->currentFrame],
                                             VK_NULL_HANDLE, &this->currentImageIndex);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR)
     {
         recreateSwapchain(this->windowWidth, this->windowHeight);
+        return;
+    }
+    if (result == VK_TIMEOUT)
+    {
+        Logger::error("vulkan: vkAcquireNextImageKHR timed out on frame {}", this->currentFrame);
         return;
     }
 

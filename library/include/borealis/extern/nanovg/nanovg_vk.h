@@ -840,14 +840,17 @@ static int vknvg_UpdateTexture(VkDevice device, VKNVGtexture *tex, int dx, int d
   vkGetImageMemoryRequirements(device, tex->image, &mem_reqs);
   VkImageSubresource subres = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
   VkSubresourceLayout layout;
-  void *bindptr;
+  void *bindptr = NULL;
   /* Get the subresource layout so we know what the row pitch is */
   vkGetImageSubresourceLayout(device, tex->image, &subres, &layout);
   NVGVK_CHECK_RESULT(vkMapMemory(device, tex->mem, 0, mem_reqs.size, 0, &bindptr));
+  if (!bindptr) {
+    return 0;
+  }
   int comp_size = (tex->type == NVG_TEXTURE_RGBA) ? 4 : 1;
   for (int y = 0; y < h; ++y) {
-    char *src = (char *)data + ((dy + y) * (tex->width * comp_size)) + dx;
-    char *dest = (char *)bindptr + ((dy + y) * layout.rowPitch) + dx;
+    char *src = (char *)data + ((dy + y) * (tex->width * comp_size)) + (dx * comp_size);
+    char *dest = (char *)bindptr + ((dy + y) * layout.rowPitch) + (dx * comp_size);
     memcpy(dest, src, w * comp_size);
   }
   vkUnmapMemory(device, tex->mem);
@@ -856,6 +859,14 @@ static int vknvg_UpdateTexture(VkDevice device, VKNVGtexture *tex, int dx, int d
 
 // call it after vknvg_UpdateTexture
 static void vknvg_InitTexture(VKNVGcontext *vk, VKNVGtexture *tex) {
+#if defined(PS5)
+    // On PS5, calling vkQueueWaitIdle on the presentation queue while flips are
+    // pending causes a deadlock with VBLANK, freezing the main thread until the
+    // OS watchdog kills the process with CE-108255-1.
+    // Linear host-visible textures on AMD RDNA2 do not require a GPU pipeline
+    // barrier to transition from PREINITIALIZED to SHADER_READ_ONLY_OPTIMAL.
+    tex->imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+#else
     VkCommandBuffer cmdbuffer = vk->initCmdBuffer;
     if (cmdbuffer == VK_NULL_HANDLE) {
         uint32_t currentFrame = *vk->createInfo.currentFrame;
@@ -916,6 +927,7 @@ static void vknvg_InitTexture(VKNVGcontext *vk, VKNVGtexture *tex) {
     vkQueueWaitIdle(queue);
     vkResetCommandBuffer( cmdbuffer, 0 );
     tex->imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+#endif
 }
 
 static int vknvg_maxVertCount(const NVGpath *paths, int npaths) {
@@ -1054,21 +1066,34 @@ static void vknvg_setUniforms(VKNVGcontext *vk, VkDescriptorSet descSet, int uni
   VKNVGtexture *tex = NULL;
   if (image != 0) {
     tex = vknvg_findTexture(vk, image);
-  } else {
+  }
+  if (!tex || tex->image == VK_NULL_HANDLE) {
     tex = vknvg_findTexture(vk, 1);
   }
+  if (!tex || tex->image == VK_NULL_HANDLE) {
+    for (int t = 0; t < vk->ntextures; t++) {
+      if (vk->textures[t].image != VK_NULL_HANDLE) {
+        tex = &vk->textures[t];
+        break;
+      }
+    }
+  }
 
-  image_info.imageLayout = tex->imageLayout;
-  image_info.imageView = tex->view;
-  image_info.sampler = tex->sampler;
+  uint32_t writeCount = 2;
+  if (tex && tex->image != VK_NULL_HANDLE && tex->view != VK_NULL_HANDLE && tex->sampler != VK_NULL_HANDLE) {
+    image_info.imageLayout = tex->imageLayout;
+    image_info.imageView = tex->view;
+    image_info.sampler = tex->sampler;
 
-  writes[2].dstSet = descSet;
-  writes[2].dstBinding = 2;
-  writes[2].descriptorCount = 1;
-  writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  writes[2].pImageInfo = &image_info;
+    writes[2].dstSet = descSet;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].pImageInfo = &image_info;
+    writeCount = 3;
+  }
 
-  vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+  vkUpdateDescriptorSets(device, writeCount, writes, 0, nullptr);
 }
 
 static void vknvg_fill(VKNVGcontext *vk, VKNVGcall *call, uint32_t descriptor_offset) {
@@ -1373,19 +1398,34 @@ static int vknvg_renderCreateTexture(void *uptr, int type, int w, int h, int ima
   VkImage mappableImage;
   VkDeviceMemory mappableMemory;
 
-  NVGVK_CHECK_RESULT(vkCreateImage(device, &image_createInfo, allocator, &mappableImage));
+  VkResult res = vkCreateImage(device, &image_createInfo, allocator, &mappableImage);
+  if (res != VK_SUCCESS) {
+    return 0;
+  }
 
   VkMemoryRequirements mem_reqs;
   vkGetImageMemoryRequirements(device, mappableImage, &mem_reqs);
 
   mem_alloc.allocationSize = mem_reqs.size;
 
-  VkResult res = vknvg_memory_type_from_properties(vk->memoryProperties, mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &mem_alloc.memoryTypeIndex);
-  assert(res == VK_SUCCESS);
+  res = vknvg_memory_type_from_properties(vk->memoryProperties, mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &mem_alloc.memoryTypeIndex);
+  if (res != VK_SUCCESS) {
+    vkDestroyImage(device, mappableImage, allocator);
+    return 0;
+  }
 
-  NVGVK_CHECK_RESULT(vkAllocateMemory(device, &mem_alloc, allocator, &mappableMemory));
+  res = vkAllocateMemory(device, &mem_alloc, allocator, &mappableMemory);
+  if (res != VK_SUCCESS) {
+    vkDestroyImage(device, mappableImage, allocator);
+    return 0;
+  }
 
-  NVGVK_CHECK_RESULT(vkBindImageMemory(device, mappableImage, mappableMemory, 0));
+  res = vkBindImageMemory(device, mappableImage, mappableMemory, 0);
+  if (res != VK_SUCCESS) {
+    vkFreeMemory(device, mappableMemory, allocator);
+    vkDestroyImage(device, mappableImage, allocator);
+    return 0;
+  }
 
   VkSamplerCreateInfo samplerCreateInfo = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   if (imageFlags & NVG_IMAGE_NEAREST) {
@@ -1415,7 +1455,12 @@ static int vknvg_renderCreateTexture(void *uptr, int type, int w, int h, int ima
   samplerCreateInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
 
   /* create sampler */
-  NVGVK_CHECK_RESULT(vkCreateSampler(device, &samplerCreateInfo, allocator, &tex->sampler));
+  VkResult sRes = vkCreateSampler(device, &samplerCreateInfo, allocator, &tex->sampler);
+  if (sRes != VK_SUCCESS) {
+    vkFreeMemory(device, mappableMemory, allocator);
+    vkDestroyImage(device, mappableImage, allocator);
+    return 0;
+  }
 
   VkImageViewCreateInfo view_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   view_info.pNext = nullptr;
@@ -1433,7 +1478,13 @@ static int vknvg_renderCreateTexture(void *uptr, int type, int w, int h, int ima
   view_info.subresourceRange.layerCount = 1;
 
   VkImageView image_view;
-  NVGVK_CHECK_RESULT(vkCreateImageView(device, &view_info, allocator, &image_view));
+  VkResult vRes = vkCreateImageView(device, &view_info, allocator, &image_view);
+  if (vRes != VK_SUCCESS) {
+    vkDestroySampler(device, tex->sampler, allocator);
+    vkFreeMemory(device, mappableMemory, allocator);
+    vkDestroyImage(device, mappableImage, allocator);
+    return 0;
+  }
 
   tex->height = h;
   tex->width = w;
@@ -1532,8 +1583,12 @@ static void vknvg_renderFlush(void *uptr) {
     vk->currentPipeline = nullptr;
 
     if (vk->ncalls > vk->cdescPool) {
-      vkDestroyDescriptorPool(device, vk->descPool, allocator);
-      vk->descPool = vknvg_createDescriptorPool(device, vk->ncalls * vk->createInfo.swapchainImageCount, allocator);
+      if (vk->descPool != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device);
+        vkDestroyDescriptorPool(device, vk->descPool, allocator);
+      }
+      uint32_t newCount = (vk->ncalls < 256) ? 512 : (vk->ncalls * 2);
+      vk->descPool = vknvg_createDescriptorPool(device, newCount * vk->createInfo.swapchainImageCount, allocator);
 
       VkDescriptorSetAllocateInfo alloc_info[1] = {
               {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, vk->descPool, 1, &vk->descLayout},
@@ -1541,15 +1596,15 @@ static void vknvg_renderFlush(void *uptr) {
 
       free(vk->uniformDescriptorSet1);
       free(vk->uniformDescriptorSet2);
-      vk->uniformDescriptorSet1 = (VkDescriptorSet *) calloc(vk->ncalls * vk->createInfo.swapchainImageCount, sizeof(VkDescriptorSet));
-      vk->uniformDescriptorSet2 = (VkDescriptorSet *) calloc(vk->ncalls * vk->createInfo.swapchainImageCount, sizeof(VkDescriptorSet));
+      vk->uniformDescriptorSet1 = (VkDescriptorSet *) calloc(newCount * vk->createInfo.swapchainImageCount, sizeof(VkDescriptorSet));
+      vk->uniformDescriptorSet2 = (VkDescriptorSet *) calloc(newCount * vk->createInfo.swapchainImageCount, sizeof(VkDescriptorSet));
 
-      for (i = 0; i < vk->ncalls * vk->createInfo.swapchainImageCount; i++) {
+      for (i = 0; i < (int)(newCount * vk->createInfo.swapchainImageCount); i++) {
         NVGVK_CHECK_RESULT(vkAllocateDescriptorSets(device, alloc_info, &vk->uniformDescriptorSet1[i]))
         NVGVK_CHECK_RESULT(vkAllocateDescriptorSets(device, alloc_info, &vk->uniformDescriptorSet2[i]))
       }
 
-      vk->cdescPool = vk->ncalls;
+      vk->cdescPool = newCount;
     }
 
       uint32_t descriptor_offset = vk->cdescPool * currentFrame; //ensure descriptor sets dont clash
