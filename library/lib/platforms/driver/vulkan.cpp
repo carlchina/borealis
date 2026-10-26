@@ -29,6 +29,12 @@
 
 #if defined(PS5)
 extern "C" int sceSystemServiceHideSplashScreen(void);
+
+// 暂时性的定位日志：Vulkan 一帧的每一步，进程被系统直接杀掉时最后一条就是出事的位置。
+// 由 MPVCore 在开始播放时打开，定位完成后删除。
+#define XOVK_TRACE(...)
+#else
+#define XOVK_TRACE(...)
 #endif
 
 namespace brls
@@ -765,7 +771,9 @@ bool VulkanContext::onFramebufferSize(int width, int height, bool init)
 
 void VulkanContext::beginFrame()
 {
+    XOVK_TRACE("begin enter");
     VkResult fenceRes = vkWaitForFences(this->device, 1, &this->inFlightFences[this->currentFrame], VK_TRUE, UINT64_MAX);
+    XOVK_TRACE("fence waited");
     if (fenceRes != VK_SUCCESS)
     {
         Logger::error("vulkan: vkWaitForFences failed ({}) on frame {}", (int)fenceRes, this->currentFrame);
@@ -819,6 +827,7 @@ void VulkanContext::beginFrame()
     renderPassInfo.pClearValues    = clearValues.data();
 
     vkCmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    XOVK_TRACE("pass begun %u", this->currentImageIndex);
 
     VkViewport viewport{};
     viewport.x        = 0.0f;
@@ -839,11 +848,13 @@ void VulkanContext::beginFrame()
 
 void VulkanContext::endFrame()
 {
-    if (!this->frameStarted) return;
+    XOVK_TRACE("end enter");
+    if (!this->frameStarted) { XOVK_TRACE("end skipped"); return; }
     this->frameStarted = false;
 
     VkCommandBuffer cmd = this->commandBuffers[this->currentFrame];
     vkCmdEndRenderPass(cmd);
+    XOVK_TRACE("pass ended");
 
     if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
     {
@@ -871,6 +882,7 @@ void VulkanContext::endFrame()
         Logger::error("vulkan: failed to submit draw command buffer");
         return;
     }
+    XOVK_TRACE("submitted");
 
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -883,6 +895,7 @@ void VulkanContext::endFrame()
     presentInfo.pImageIndices   = &this->currentImageIndex;
 
     VkResult result = vkQueuePresentKHR(this->presentQueue, &presentInfo);
+    XOVK_TRACE("presented %d", (int)result);
 #if defined(PS5)
     static bool s_splashHidden = false;
     if (!s_splashHidden && result == VK_SUCCESS)
