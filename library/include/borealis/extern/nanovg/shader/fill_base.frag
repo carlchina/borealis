@@ -90,27 +90,20 @@ float bt2390_spline(float E, float KS, float maxLum) {
 
 vec3 apply_libplacebo_bt2390_tone_mapping(vec3 lin2020) {
     float Y = dot(lin2020, vec3(0.2627, 0.6780, 0.0593));
-    float src_max = 1000.0;
-    float dst_max = 100.0;
-    float E = nits_to_pq(Y);
-    float minLum = 0.0;
-    float maxLum = nits_to_pq(dst_max);
-    float KS = 1.5 * maxLum - 0.5;
+    if (Y <= 1e-4) return vec3(0.0);
 
-    float E1 = E;
-    if (E > KS) {
-        E1 = bt2390_spline(E, KS, maxLum);
-    }
-    float Y1 = pq_to_nits(E1);
+    // 0 ~ 100 nits (SDR standard range) 保持 1:1 线性光照，确保人脸与环境通透不暗淡
+    // 100 ~ 1000+ nits (HDR highlights) 采用高动态平滑滚降曲线，保留层次
+    float Y1 = Y <= 100.0 ? Y : (100.0 + (Y - 100.0) / (1.0 + (Y - 100.0) / 120.0));
 
-    vec3 mapped2020 = lin2020 * (Y > 1e-4 ? (Y1 / Y) : 1.0);
+    vec3 mapped2020 = lin2020 * (Y1 / (Y * 100.0));
 
     const mat3 M_2020_to_709 = mat3(
          1.6604910, -0.1245505, -0.0181508,
         -0.5876411,  1.1328999, -0.1005789,
         -0.0728499, -0.0083494,  1.1187297
     );
-    vec3 lin709 = max(M_2020_to_709 * (mapped2020 / dst_max), vec3(0.0));
+    vec3 lin709 = max(M_2020_to_709 * mapped2020, vec3(0.0));
 
     // BT.709 OETF (Linear -> Gamma 2.4 / sRGB)
     vec3 srgb = mix(
@@ -130,7 +123,8 @@ vec3 hdr10_to_sdr(vec3 pq) {
 // Dolby Vision Profile 5 Reshaping & Decoding
 // ===========================================================================
 vec3 dolby_vision_profile5_to_nits(vec3 c) {
-    vec3 pseudo_rgb = c.brg;
+    // 采样纹理输入为标准的 RGB 顺序 (R=I, G=Ct, B=Cp)
+    vec3 pseudo_rgb = c.rgb;
     const mat3 M_recover = mat3(
          0.790634,  0.025932, -0.018377,
          0.190168,  0.931947, -0.061823,
