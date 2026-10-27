@@ -120,24 +120,81 @@ vec3 hdr10_to_sdr(vec3 pq) {
 }
 
 // ===========================================================================
+// ITU-R BT.2100 HLG (Hybrid Log-Gamma, ARIB STD-B67) EOTF
+// ===========================================================================
+vec3 hlg_to_nits(vec3 hlg) {
+    const float a = 0.17883277;
+    const float b = 0.28466889;
+    const float c = 0.55991073;
+    vec3 h = clamp(hlg, vec3(0.0), vec3(1.0));
+    vec3 lin = mix(
+        (h * h) / 3.0,
+        (exp((h - vec3(c)) / a) + vec3(b)) / 12.0,
+        greaterThan(h, vec3(0.5))
+    );
+    // HLG 标称峰值白点为 1000 Nits
+    return lin * 1000.0;
+}
+
+vec3 hlg_to_pq(vec3 hlg) {
+    return nits_to_pq_vec3(hlg_to_nits(hlg));
+}
+
+vec3 hlg_to_sdr(vec3 hlg) {
+    vec3 lin2020 = hlg_to_nits(hlg);
+    return apply_libplacebo_bt2390_tone_mapping(lin2020);
+}
+
+// ===========================================================================
 // Dolby Vision Profile 5 Reshaping & Decoding
 // ===========================================================================
 vec3 dolby_vision_profile5_to_nits(vec3 c) {
-    // 采样纹理输入为标准的 RGB 顺序 (R=I, G=Ct, B=Cp)
     vec3 pseudo_rgb = c.rgb;
-    const mat3 M_recover = mat3(
-         0.26712846,  0.15807154, -0.01187756,
-         0.66145741,  0.76894259,  0.64496207,
-         0.07141413,  0.07298587,  0.36691549
+
+    // 1. 从伪 RGB 提取 swscale 的 YUV 信号:
+    // Y (明度 I), Cb (色度差 Ct), Cr (色度差 Cp)
+    const mat3 M_rgb_to_yuv_709 = mat3(
+         0.21260000, -0.11457211,  0.50000000,
+         0.71520000, -0.38542789, -0.45415291,
+         0.07220000,  0.50000000, -0.04584709
     );
-    vec3 lms_prime = clamp(M_recover * pseudo_rgb, vec3(0.0), vec3(1.0));
+    vec3 yuv = M_rgb_to_yuv_709 * pseudo_rgb;
+    
+    // 2. 补偿 mpv swscale 默认按 Limited Range (16-235) 造成的色度过载:
+    // Profile 5 属于 Full Range，swscale 将其当作 Limited Range 处理时色度被拉伸了约 14%
+    float Y = clamp(yuv.x, 0.0, 1.0);
+    float Ct = yuv.y * (224.0 / 255.0);
+    float Cp = yuv.z * (224.0 / 255.0);
+
+    // 3. 抑制暗部由于非线性色度差导致的绿色过敏泄漏:
+    // 在低明度暗调区域 (Y < 0.25)，色度噪声在 PQ 极陡曲线下会被放大数倍，进行软平滑衰减
+    float chroma_damp = smoothstep(0.02, 0.25, Y);
+    Ct *= mix(0.7, 1.0, chroma_damp);
+    Cp *= mix(0.7, 1.0, chroma_damp);
+
+    // 4. 重建标准 ITU-R BT.2100 非线性 LMS' (L', M', S')
+    float L_prime = clamp(Y + 0.00860904 * Ct + 0.11102963 * Cp, 0.0, 1.0);
+    float M_prime = clamp(Y - 0.00860904 * Ct - 0.11102963 * Cp, 0.0, 1.0);
+    float S_prime = clamp(Y + 0.56003134 * Ct - 0.32062717 * Cp, 0.0, 1.0);
+    vec3 lms_prime = vec3(L_prime, M_prime, S_prime);
+
+    // 5. PQ EOTF -> 线性 LMS 光照
     vec3 lin_lms = pq_to_nits_vec3(lms_prime);
+
+    // 6. 线性 LMS -> BT.2020 矩阵 (libplacebo dovi_lms2rgb)
     const mat3 M_lms_to_2020 = mat3(
          3.06441879, -0.65612108,  0.01736321,
         -2.16597676,  1.78554118, -0.04725154,
          0.10155818, -0.12943749,  1.03004253
     );
-    return max(M_lms_to_2020 * lin_lms, vec3(0.0));
+    vec3 lin2020 = M_lms_to_2020 * lin_lms;
+
+    // 7. 色域边界保护: 防止极端暗部产生非物理负值导致的荧光绿偏色
+    float min_c = min(lin2020.r, min(lin2020.g, lin2020.b));
+    if (min_c < 0.0) {
+        lin2020 -= vec3(min_c);
+    }
+    return max(lin2020, vec3(0.0));
 }
 
 vec3 dolby_vision_profile5_to_sdr(vec3 c) {
@@ -207,6 +264,13 @@ void main(void) {
             } else {
                 color = vec4(dolby_vision_profile5_to_sdr(color.rgb), color.a);
             }
+        } else if (texType == 6) {
+            isVideo = true;
+            if (isHdrDirect) {
+                videoPq = hlg_to_pq(color.rgb);
+            } else {
+                color = vec4(hlg_to_sdr(color.rgb), color.a);
+            }
         }
 
         color *= innerCol;
@@ -231,6 +295,13 @@ void main(void) {
                 videoPq = dolby_vision_profile5_to_pq(color.rgb);
             } else {
                 color = vec4(dolby_vision_profile5_to_sdr(color.rgb), color.a);
+            }
+        } else if (texType == 6) {
+            isVideo = true;
+            if (isHdrDirect) {
+                videoPq = hlg_to_pq(color.rgb);
+            } else {
+                color = vec4(hlg_to_sdr(color.rgb), color.a);
             }
         }
 

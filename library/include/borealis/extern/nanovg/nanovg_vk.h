@@ -467,7 +467,9 @@ static int vknvg_convertPaint(VKNVGcontext *vk, VKNVGfragUniforms *frag, NVGpain
     frag->type = NSVG_SHADER_FILLIMG;
 
     if (tex->type == NVG_TEXTURE_RGBA) {
-      if (paint->radius > 1.5f || (tex->flags & NVG_IMAGE_DOVI_PROFILE5)) {
+      if (paint->radius > 2.5f) {
+        frag->texType = 6; // GPU HLG (BT.2100 ARIB STD-B67) -> PQ / SDR tone mapping
+      } else if (paint->radius > 1.5f || (tex->flags & NVG_IMAGE_DOVI_PROFILE5)) {
         frag->texType = 5; // GPU Dolby Vision Profile 5 ICtCp reshaping & tone mapping
       } else if (paint->radius > 0.5f || (tex->flags & NVG_IMAGE_HDR_TONEMAP)) {
         frag->texType = 4; // GPU HDR PQ BT.2020 -> SDR BT.709 tone mapping
