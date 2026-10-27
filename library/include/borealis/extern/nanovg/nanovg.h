@@ -145,6 +145,7 @@ enum NVGimageFlags {
 	NVG_IMAGE_NEAREST			= 1<<5,		// Image interpolation is Nearest instead Linear
 	NVG_IMAGE_STREAMING  		= 1<<6,		// Image d3d11 flags Usage = D3D11_USAGE_DYNAMIC,CPUAccessFlags = D3D11_CPU_ACCESS_WRITE.
 	NVG_IMAGE_COPY_SWAP 		= 1<<7,		// Image d3d11 flags UpdateTexture use swap texture.
+	NVG_IMAGE_HDR_TONEMAP 		= 1<<8,		// Image flag to trigger GPU HDR PQ BT.2020 -> SDR BT.709 tone mapping in fragment shader.
 };
 
 enum NVGstencilFlags {
