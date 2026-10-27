@@ -124,7 +124,20 @@ typedef struct VKNVGfragUniforms {
   float strokeThr;
   int texType;
   int type;
+  int hdrOutput;
 } VKNVGfragUniforms;
+
+static int s_vknvg_hdr_output = 0;
+static inline int vknvg_get_hdr_output(void) { return s_vknvg_hdr_output; }
+static inline void vknvg_set_hdr_output(int enable) { s_vknvg_hdr_output = enable; }
+
+void nvgSetHdrOutput(NVGcontext* ctx, int enable) {
+  vknvg_set_hdr_output(enable);
+}
+
+int nvgGetHdrOutput(NVGcontext* ctx) {
+  return vknvg_get_hdr_output();
+}
 
 typedef struct VKNVGBuffer {
   VkBuffer buffer;
@@ -473,6 +486,7 @@ static int vknvg_convertPaint(VKNVGcontext *vk, VKNVGfragUniforms *frag, NVGpain
   }
 
   vknvg_xformToMat3x4(frag->paintMat, invxform);
+  frag->hdrOutput = vknvg_get_hdr_output();
 
   return 1;
 }

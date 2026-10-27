@@ -711,6 +711,10 @@ NVGparams* nvgInternalParams(NVGcontext* ctx);
 // Debug function to dump cached path data.
 void nvgDebugDumpPathCache(NVGcontext* ctx);
 
+// PS5 / Vulkan HDR10 display output mode
+void nvgSetHdrOutput(NVGcontext* ctx, int enable);
+int nvgGetHdrOutput(NVGcontext* ctx);
+
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
