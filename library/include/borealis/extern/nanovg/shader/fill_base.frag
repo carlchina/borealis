@@ -126,9 +126,9 @@ vec3 dolby_vision_profile5_to_nits(vec3 c) {
     // 采样纹理输入为标准的 RGB 顺序 (R=I, G=Ct, B=Cp)
     vec3 pseudo_rgb = c.rgb;
     const mat3 M_recover = mat3(
-         0.790634,  0.025932, -0.018377,
-         0.190168,  0.931947, -0.061823,
-         0.019198,  0.042121,  1.080200
+         0.26712846,  0.15807154, -0.01187756,
+         0.66145741,  0.76894259,  0.64496207,
+         0.07141413,  0.07298587,  0.36691549
     );
     vec3 lms_prime = clamp(M_recover * pseudo_rgb, vec3(0.0), vec3(1.0));
     vec3 lin_lms = pq_to_nits_vec3(lms_prime);
